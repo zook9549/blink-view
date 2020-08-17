@@ -49,6 +49,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.FileTime;
 import java.security.GeneralSecurityException;
 import java.text.MessageFormat;
 import java.time.ZoneId;
@@ -69,12 +72,12 @@ public class BlinkViewApplication {
 
 
     @RequestMapping(value = "/getVideos")
-    @Scheduled(fixedDelay = 3600000)
+    @Scheduled(fixedDelay = 1800000)
     public Collection<Media> getVideos() throws Exception {
         Account account = getAccount();
         ArrayList<Media> results = new ArrayList<>();
         ArrayList<Media> processedResults = new ArrayList<>(getHistory());
-        log.debug("Found {} previously processed items", processedResults.size());
+        log.info("Executing video polling. Found {} previously processed items", processedResults.size());
         int page = 1;
         boolean hasMoreResults;
         do {
@@ -109,15 +112,24 @@ public class BlinkViewApplication {
                         .build();
 
         PhotosLibraryClient photosLibraryClient = PhotosLibraryClient.initialize(settings);
-        for (Media result : results) {
-            archiveMedia(result, photosLibraryClient);
-            processedResults.add(result);
+        try {
+            for (Media result : results) {
+                archiveMedia(account, result, photosLibraryClient);
+                processedResults.add(result);
+            }
+            log.info("Processed {} new results", results.size());
+            saveHistory(processedResults);
+        } finally {
+            photosLibraryClient.shutdown();
+            int maxWait = 240;
+            int counter = 0;
+            int increment = 30;
+            while (!photosLibraryClient.awaitTermination(increment, TimeUnit.SECONDS) || counter > maxWait) {
+                counter += increment;
+            }
+            photosLibraryClient.close();
         }
-        log.info("Processed {} new results", results.size());
-        saveHistory(processedResults);
-        photosLibraryClient.shutdown();
-        photosLibraryClient.awaitTermination(60, TimeUnit.SECONDS);
-        photosLibraryClient.close();
+        log.info("Finished polling with {} results", results.size());
         return results;
     }
 
@@ -137,18 +149,21 @@ public class BlinkViewApplication {
         writer.writeValue(new File(path), results);
     }
 
-    private Media archiveMedia(Media media, PhotosLibraryClient photosLibraryClient) {
+    private Media archiveMedia(Account account, Media media, PhotosLibraryClient photosLibraryClient) {
         File pic = getArchiveFile(media);
         media.setArchivePath(pic.getPath());
         try {
             if (!pic.exists()) {
                 RestTemplate restMediaTemplate = new RestTemplate();
                 HttpHeaders headers = new HttpHeaders();
-                headers.add("token-auth", getAccount().getAuthToken());
+                headers.add("token-auth", account.getAuthToken());
                 HttpEntity<String> entity = new HttpEntity<>("parameters", headers);
                 ResponseEntity<byte[]> mediaResponse = restMediaTemplate.exchange(media.getSourceUrl(), HttpMethod.GET, entity, byte[].class);
                 FileUtils.writeByteArrayToFile(pic, mediaResponse.getBody());
-                pic.setLastModified(media.getCaptureTime().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
+
+                BasicFileAttributeView attributes = Files.getFileAttributeView(pic.toPath(), BasicFileAttributeView.class);
+                FileTime time = FileTime.from(media.getCaptureTime().atZone(ZoneId.systemDefault()).toInstant());
+                attributes.setTimes(time, time, time);
                 media.setImage(mediaResponse.getBody());
             } else {
                 media.setImage(FileUtils.readFileToByteArray(pic));
@@ -191,9 +206,8 @@ public class BlinkViewApplication {
                 String uploadToken = uploadResponse.getUploadToken().get();
                 // Use this upload token to create a media item
                 NewMediaItem newMediaItem = NewMediaItemFactory
-                        .createNewMediaItem(uploadToken, media.getId(), "Taken from " + media.getCamera() + " @ " + media.getCaptureTime().format(prettyFormatter));
+                        .createNewMediaItem(uploadToken, media.getId(), media.getCamera() + " @ " + media.getCaptureTime().format(prettyFormatter));
                 List<NewMediaItem> newItems = Arrays.asList(newMediaItem);
-
                 BatchCreateMediaItemsResponse response = photosLibraryClient.batchCreateMediaItems(getAlbumId(photosLibraryClient, media), newItems);
                 for (NewMediaItemResult itemsResponse : response.getNewMediaItemResultsList()) {
                     Status status = itemsResponse.getStatus();
@@ -212,7 +226,6 @@ public class BlinkViewApplication {
         }
     }
 
-
     private String getAlbumId(PhotosLibraryClient photosLibraryClient, Media media) {
         List<Album> albums = photosLibraryClient.listAlbums(true).getPage().getResponse().getAlbumsList();
         for (Album album : albums) {
@@ -222,7 +235,6 @@ public class BlinkViewApplication {
         }
         return photosLibraryClient.createAlbum(media.getCamera()).getId();
     }
-
 
     private Credentials getUserCredentials(String credentialsPath, List<String> selectedScopes) throws IOException, GeneralSecurityException {
         GoogleClientSecrets clientSecrets = GoogleClientSecrets.load(JSON_FACTORY, new InputStreamReader(new FileInputStream(credentialsPath)));
@@ -250,26 +262,24 @@ public class BlinkViewApplication {
 
     @RequestMapping(value = "/getAccount")
     public Account getAccount() {
-        if (account == null) {
-            account = new Account();
-            RestTemplate restTemplate = new RestTemplate();
-            Map<String, String> map = new HashMap<>();
-            map.put("email", email);
-            map.put("password", password);
-            map.put("unique_id", uuid);
-            try {
-                String jsonRequest = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(map);
-                HttpEntity<String> entity = new HttpEntity<>(jsonRequest);
-                ResponseEntity<Map> response = restTemplate.exchange(blinkLoginUrl, HttpMethod.POST, entity, Map.class);
-                Map vals = response.getBody();
-                account.setAccountId(((Map) vals.get("account")).get("id").toString());
-                account.setClientId(((Map) vals.get("client")).get("id").toString());
-                account.setAuthToken(((Map) vals.get("authtoken")).get("authtoken").toString());
-                account.setRegion(((Map) vals.get("region")).get("tier").toString());
-                account.setPinRequired(Boolean.getBoolean(((Map) vals.get("client")).get("verification_required").toString()));
-            } catch (JsonProcessingException ex) {
-                throw new RuntimeException(ex);
-            }
+        Account account = new Account();
+        RestTemplate restTemplate = new RestTemplate();
+        Map<String, String> map = new HashMap<>();
+        map.put("email", email);
+        map.put("password", password);
+        map.put("unique_id", uuid);
+        try {
+            String jsonRequest = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(map);
+            HttpEntity<String> entity = new HttpEntity<>(jsonRequest);
+            ResponseEntity<Map> response = restTemplate.exchange(blinkLoginUrl, HttpMethod.POST, entity, Map.class);
+            Map vals = response.getBody();
+            account.setAccountId(((Map) vals.get("account")).get("id").toString());
+            account.setClientId(((Map) vals.get("client")).get("id").toString());
+            account.setAuthToken(((Map) vals.get("authtoken")).get("authtoken").toString());
+            account.setRegion(((Map) vals.get("region")).get("tier").toString());
+            account.setPinRequired(Boolean.getBoolean(((Map) vals.get("client")).get("verification_required").toString()));
+        } catch (JsonProcessingException ex) {
+            throw new RuntimeException(ex);
         }
         return account;
     }
@@ -311,8 +321,6 @@ public class BlinkViewApplication {
     private ObjectMapper objectMapper;
 
     private static final DateTimeFormatter prettyFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-
-    private Account account;
 
     private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
     private static final int LOCAL_RECEIVER_PORT = 61984;

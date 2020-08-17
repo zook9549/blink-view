@@ -39,7 +39,11 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
-
+        <dependency>
+            <groupId>com.googlecode.mp4parser</groupId>
+            <artifactId>isoparser</artifactId>
+            <version>1.0.5.4</version>
+        </dependency>
         <dependency>
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
@@ -49,12 +53,12 @@
         <dependency>
             <groupId>com.google.photos.library</groupId>
             <artifactId>google-photos-library-client</artifactId>
-            <version>1.6.0</version>
+            <version>LATEST</version>
         </dependency>
         <dependency>
             <groupId>com.google.api-client</groupId>
             <artifactId>google-api-client</artifactId>
-            <version>1.30.10</version>
+            <version>LATEST</version>
         </dependency>
 
         <dependency>
