@@ -13,7 +13,7 @@ import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.json.JsonFactory;
-import com.google.api.client.json.jackson2.JacksonFactory;
+import com.google.api.client.json.gson.GsonFactory;
 import com.google.api.client.util.store.FileDataStoreFactory;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.auth.Credentials;
@@ -69,7 +69,6 @@ public class BlinkViewApplication {
     public static void main(String[] args) {
         SpringApplication.run(BlinkViewApplication.class, args);
     }
-
 
     @RequestMapping(value = "/getVideos")
     @Scheduled(fixedDelay = 1800000)
@@ -133,6 +132,32 @@ public class BlinkViewApplication {
         return results;
     }
 
+    @RequestMapping(value = "/getAccount")
+    public Account getAccount() {
+        Account account = new Account();
+        account.setUniqueId(uuid);
+        RestTemplate restTemplate = new RestTemplate();
+        Map<String, String> map = new HashMap<>();
+        map.put("email", email);
+        map.put("password", password);
+        map.put("unique_id", uuid);
+        map.put("reauth", "true");
+        try {
+            String jsonRequest = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(map);
+            HttpEntity<String> entity = new HttpEntity<>(jsonRequest);
+            ResponseEntity<Map> response = restTemplate.exchange(blinkLoginUrl, HttpMethod.POST, entity, Map.class);
+            Map vals = response.getBody();
+            account.setAccountId(((Map) vals.get("account")).get("account_id").toString());
+            account.setClientId(((Map) vals.get("account")).get("client_id").toString());
+            account.setAuthToken(((Map) vals.get("auth")).get("token").toString());
+            account.setRegion(((Map) vals.get("account")).get("tier").toString());
+            account.setPinRequired(Boolean.getBoolean(((Map) vals.get("account")).get("account_verification_required").toString()));
+        } catch (JsonProcessingException ex) {
+            throw new RuntimeException(ex);
+        }
+        return account;
+    }
+
     private Collection<Media> getHistory() throws Exception {
         File historyFile = new File(getBaseArchivePath() + "/results.json");
         if (historyFile.exists()) {
@@ -175,17 +200,6 @@ public class BlinkViewApplication {
         return media;
     }
 
-    private File getArchiveFile(Media media) {
-        String path = getBaseArchivePath();
-        path += '/' + media.getCamera() + '/' + media.getId() + ".mp4";
-        return new File(path);
-    }
-
-    private String getBaseArchivePath() {
-        return getClass().getClassLoader().getResource(snapshotBaseDirectory + '/' + snapshotDirectoryName).getPath();
-    }
-
-
     private void uploadMedia(Media media, PhotosLibraryClient photosLibraryClient) {
         // Open the file and automatically close it after upload
         try (RandomAccessFile file = new RandomAccessFile(getArchiveFile(media), "r")) {
@@ -216,6 +230,7 @@ public class BlinkViewApplication {
                         MediaItem createdItem = itemsResponse.getMediaItem();
                         media.setArchiveUrl(createdItem.getProductUrl());
                         media.setArchiveId(createdItem.getId());
+                        log.info("Processed video: {}", createdItem.getProductUrl());
                     } else {
                         log.error("Unable to process: {}", itemsResponse);
                     }
@@ -240,51 +255,23 @@ public class BlinkViewApplication {
         GoogleClientSecrets clientSecrets = GoogleClientSecrets.load(JSON_FACTORY, new InputStreamReader(new FileInputStream(credentialsPath)));
         String clientId = clientSecrets.getDetails().getClientId();
         String clientSecret = clientSecrets.getDetails().getClientSecret();
-
-        GoogleAuthorizationCodeFlow flow =
-                new GoogleAuthorizationCodeFlow.Builder(
-                        GoogleNetHttpTransport.newTrustedTransport(),
-                        JSON_FACTORY,
-                        clientSecrets,
-                        selectedScopes)
-                        .setDataStoreFactory(new FileDataStoreFactory(new File(authStore)))
-                        .setAccessType("offline")
-                        .build();
-        LocalServerReceiver receiver =
-                new LocalServerReceiver.Builder().setPort(LOCAL_RECEIVER_PORT).build();
-        Credential credential = new AuthorizationCodeInstalledApp(flow, receiver).authorize("user");
-        return UserCredentials.newBuilder()
-                .setClientId(clientId)
-                .setClientSecret(clientSecret)
-                .setRefreshToken(credential.getRefreshToken())
-                .build();
+        GoogleAuthorizationCodeFlow flow = (new GoogleAuthorizationCodeFlow.Builder(GoogleNetHttpTransport.newTrustedTransport(), JSON_FACTORY, clientSecrets, selectedScopes)).setDataStoreFactory(new FileDataStoreFactory(new File(this.authStore))).setAccessType("offline").build();
+        LocalServerReceiver receiver = (new LocalServerReceiver.Builder()).setPort(LOCAL_RECEIVER_PORT).build();
+        Credential credential = (new AuthorizationCodeInstalledApp(flow, receiver)).authorize("user");
+        return UserCredentials.newBuilder().setClientId(clientId).setClientSecret(clientSecret).setRefreshToken(credential.getRefreshToken()).build();
     }
 
-    @RequestMapping(value = "/getAccount")
-    public Account getAccount() {
-        Account account = new Account();
-        RestTemplate restTemplate = new RestTemplate();
-        Map<String, String> map = new HashMap<>();
-        map.put("email", email);
-        map.put("password", password);
-        map.put("unique_id", uuid);
-        try {
-            String jsonRequest = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(map);
-            HttpEntity<String> entity = new HttpEntity<>(jsonRequest);
-            ResponseEntity<Map> response = restTemplate.exchange(blinkLoginUrl, HttpMethod.POST, entity, Map.class);
-            Map vals = response.getBody();
-            account.setAccountId(((Map) vals.get("account")).get("id").toString());
-            account.setClientId(((Map) vals.get("client")).get("id").toString());
-            account.setAuthToken(((Map) vals.get("authtoken")).get("authtoken").toString());
-            account.setRegion(((Map) vals.get("region")).get("tier").toString());
-            account.setPinRequired(Boolean.getBoolean(((Map) vals.get("client")).get("verification_required").toString()));
-        } catch (JsonProcessingException ex) {
-            throw new RuntimeException(ex);
-        }
-        return account;
+    private File getArchiveFile(Media media) {
+        String path = getBaseArchivePath();
+        path += '/' + media.getCamera() + '/' + media.getId() + ".mp4";
+        return new File(path);
     }
 
-    @Bean
+    private String getBaseArchivePath() {
+        return getClass().getClassLoader().getResource(snapshotBaseDirectory + '/' + snapshotDirectoryName).getPath();
+    }
+
+    // @Bean
     public ObjectMapper objectMapper() {
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
@@ -322,10 +309,11 @@ public class BlinkViewApplication {
 
     private static final DateTimeFormatter prettyFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
+    private static final JsonFactory JSON_FACTORY = GsonFactory.getDefaultInstance();
     private static final int LOCAL_RECEIVER_PORT = 61984;
     private static final List<String> REQUIRED_SCOPES = ImmutableList.of(
-            "https://www.googleapis.com/auth/photoslibrary",
-            "https://www.googleapis.com/auth/photoslibrary.sharing");
+            "https://www.googleapis.com/auth/photoslibrary.appendonly",
+            "https://www.googleapis.com/auth/photoslibrary.sharing",
+            "https://www.googleapis.com/auth/photoslibrary");
 
 }

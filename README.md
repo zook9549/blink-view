@@ -12,7 +12,7 @@ In application.properties, enter in your Blink email and Blink password into the
 # Additional Property Configuration
 Set your output directories in application.properties.  These specify where to find your cred files and where to cache snapshots/results.
 # Running the solution 
-Fire it up via standard Sprint Boot.  While this does setup a Tomcat instance to run as well, it's largely unnecessary.  The only REST service is to trigger to the process via /getVideos.
+Fire it up via standard Spring Boot.  While this does setup a Tomcat instance to run as well, it's largely unnecessary.  The only REST service is to trigger to the process via /getVideos.
 
 All results are stored in results.json under the snapshot directory.  Clean out this director if you want to do an entirely fresh pull of videos.
 
